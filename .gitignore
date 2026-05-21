@@ -1,0 +1,22 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+
+# Local binaries and manual backups are not committed.
+bin/
+
+# Never commit local CodexBar/Codex/CLaude account data.
+auth.json
+*.token
+*.secret
+*.key
+*.pem
+*.p12
+*.mobileprovision
+widget-snapshot.json
+managed-codex-accounts.json
+codex-account-snapshots.json
+claude.json
+codex.json
+
