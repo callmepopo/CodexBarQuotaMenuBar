@@ -3,6 +3,7 @@ import Foundation
 final class DataStore {
     private let decoder = JSONDecoder()
     private let fileManager = FileManager.default
+    private let notStartedResetTolerance: TimeInterval = 120
 
     private var homeDirectory: URL {
         fileManager.homeDirectoryForCurrentUser
@@ -96,7 +97,10 @@ final class DataStore {
             let isActive = displayEmail?.lowercased() == activeEmail
 
             if let snapshot {
-                let windows = normalizeCodexWindows([snapshot.primary, snapshot.secondary].compactMap { $0 })
+                let windows = normalizeCodexWindows(
+                    [snapshot.primary, snapshot.secondary].compactMap { $0 },
+                    capturedAt: snapshot.updatedAt?.value
+                )
                 if !windows.isEmpty {
                     return AccountQuota(
                         id: "codex-\(account.id)",
@@ -118,7 +122,7 @@ final class DataStore {
                 provider: "Codex",
                 displayName: Privacy.maskedEmail(displayEmail),
                 subscription: displaySubscription(authPlan),
-                windows: normalizeCodexWindows(history?.windows ?? []),
+                windows: history?.windows ?? [],
                 updatedAt: history?.updatedAt,
                 status: history == nil ? "需重新认证" : "历史数据 / 需重新认证",
                 switchSourceAuthPath: sourceAuthPath,
@@ -248,12 +252,13 @@ final class DataStore {
                 return nil
             }
 
-            return QuotaWindow(
+            let window = QuotaWindow(
                 usedPercent: latest.usedPercent,
                 resetDescription: formatResetDescription(latest.resetsAt),
                 resetsAt: FlexibleString(value: latest.resetsAt),
                 windowMinutes: history.windowMinutes
             )
+            return normalizeCodexWindow(window, capturedAt: latest.capturedAt)
         }
 
         guard !windows.isEmpty else {
@@ -264,22 +269,39 @@ final class DataStore {
         return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, latestCapture)
     }
 
-    private func normalizeCodexWindows(_ windows: [QuotaWindow]) -> [QuotaWindow] {
-        guard isNotStartedCodexUsage(windows) else {
-            return windows
-        }
-
-        return windows.map { window in
-            window.markedNotStarted(displayUsedPercent: window.windowMinutes == 300 ? 0 : nil)
-        }
+    private func normalizeCodexWindows(_ windows: [QuotaWindow], capturedAt: String?) -> [QuotaWindow] {
+        windows.map { normalizeCodexWindow($0, capturedAt: capturedAt) }
     }
 
-    private func isNotStartedCodexUsage(_ windows: [QuotaWindow]) -> Bool {
-        let fiveHour = windows.first { $0.windowMinutes == 300 }
-        let oneWeek = windows.first { $0.windowMinutes == 10_080 }
+    private func normalizeCodexWindow(_ window: QuotaWindow, capturedAt: String?) -> QuotaWindow {
+        guard isNotStartedCodexWindow(window, capturedAt: capturedAt) else {
+            return window
+        }
 
-        return fiveHour.map { $0.usedPercent <= 1 } == true
-            && oneWeek.map { $0.usedPercent == 0 } == true
+        return window.markedNotStarted(displayUsedPercent: 0)
+    }
+
+    private func isNotStartedCodexWindow(_ window: QuotaWindow, capturedAt: String?) -> Bool {
+        let expectedUsage: Bool
+        switch window.windowMinutes {
+        case 300:
+            expectedUsage = window.usedPercent <= 1
+        case 10_080:
+            expectedUsage = window.usedPercent == 0
+        default:
+            return false
+        }
+
+        guard
+            expectedUsage,
+            let capturedDate = quotaDate(from: capturedAt),
+            let resetDate = quotaDate(from: window.resetsAt?.value)
+        else {
+            return false
+        }
+
+        let expectedResetDate = capturedDate.addingTimeInterval(TimeInterval(window.windowMinutes * 60))
+        return abs(resetDate.timeIntervalSince(expectedResetDate)) <= notStartedResetTolerance
     }
 
     private func formatResetDescription(_ value: String?) -> String? {
@@ -298,6 +320,46 @@ final class DataStore {
         output.timeZone = .current
         output.dateFormat = calendar.isDateInToday(date) ? "HH:mm" : "M月d日 HH:mm"
         return output.string(from: date)
+    }
+
+    private func quotaDate(from value: String?) -> Date? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+
+        let isoFormatter = ISO8601DateFormatter()
+        let fractionalISOFormatter = ISO8601DateFormatter()
+        fractionalISOFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        if let date = isoFormatter.date(from: raw) ?? fractionalISOFormatter.date(from: raw) {
+            return date
+        }
+
+        if let seconds = Double(raw) {
+            return quotaDate(fromSeconds: seconds)
+        }
+
+        return nil
+    }
+
+    private func quotaDate(fromSeconds seconds: Double) -> Date {
+        let referenceDate = Date(timeIntervalSinceReferenceDate: seconds)
+        let unixDate = Date(timeIntervalSince1970: seconds)
+        let now = Date()
+
+        if referenceDate >= now, unixDate < now {
+            return referenceDate
+        }
+
+        if unixDate >= now, referenceDate < now {
+            return unixDate
+        }
+
+        if abs(referenceDate.timeIntervalSince(now)) < abs(unixDate.timeIntervalSince(now)) {
+            return referenceDate
+        }
+
+        return unixDate
     }
 
     private func displaySubscription(_ value: String?) -> String? {

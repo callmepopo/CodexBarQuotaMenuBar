@@ -52,10 +52,12 @@ CodexBarQuotaMenuBar-macOS-arm64.zip
 - 不修改 `/Applications/CodexBar.app`。
 - 不修改 CodexBar 配置。
 - 不上传任何本地数据。
-- 不读取或提交任何仓库外的 Token、Cookie、OAuth secret、API Key。
+- 额度百分比、Reset 时间和 `Not started yet` 判断只来自 CodexBar 本地额度数据。
+- 不明文输出、记录或展示 Token、`id_token`、refresh token、Cookie、OAuth secret、API Key。
+- 不使用 `auth.json` 推导额度百分比、Reset 时间或额度状态。
 - 展示邮箱时会脱敏。
 
-本工具读取的本地展示数据包括：
+本工具读取的本地额度展示数据包括：
 
 ```text
 ~/Library/Group Containers/Y5PE65HELJ.com.steipete.codexbar/widget-snapshot.json
@@ -65,11 +67,13 @@ CodexBarQuotaMenuBar-macOS-arm64.zip
 ~/Library/Application Support/com.steipete.codexbar/history/claude.json
 ```
 
-为了判断当前 Codex CLI 使用中的账号，并支持账号切换，本工具会读取：
+为了判断当前 Codex CLI 使用中的账号、兜底识别邮箱和套餐类型，并支持账号切换，本工具会读取：
 
 ```text
 ~/.codex/auth.json
 ```
+
+Codex/CodexBar 授权配置只作为账号身份辅助来源，不作为额度来源。
 
 点击 `Switch` 切换 Codex 账号时，本工具会：
 
@@ -188,10 +192,12 @@ This app follows these boundaries:
 - It does not modify `/Applications/CodexBar.app`.
 - It does not modify CodexBar settings.
 - It does not upload any local data.
-- It does not read or commit external tokens, cookies, OAuth secrets, or API keys.
+- Quota percentages, reset times, and `Not started yet` are derived only from CodexBar local quota data.
+- It does not print, log, or display tokens, `id_token`, refresh tokens, cookies, OAuth secrets, or API keys.
+- It does not use `auth.json` to infer quota percentages, reset times, or quota status.
 - Email addresses are masked in the UI.
 
-The app reads these local display data files:
+The app reads these local quota display data files:
 
 ```text
 ~/Library/Group Containers/Y5PE65HELJ.com.steipete.codexbar/widget-snapshot.json
@@ -201,11 +207,13 @@ The app reads these local display data files:
 ~/Library/Application Support/com.steipete.codexbar/history/claude.json
 ```
 
-To detect the active Codex CLI account and support account switching, the app reads:
+To detect the active Codex CLI account, use email and plan type as fallback identity metadata, and support account switching, the app reads:
 
 ```text
 ~/.codex/auth.json
 ```
+
+Codex/CodexBar auth configuration is used only as account identity metadata, not as a quota source.
 
 When you click `Switch`, the app will:
 
