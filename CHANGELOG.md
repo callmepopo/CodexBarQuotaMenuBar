@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.3 - 2026-05-22
+
+- Fixed the relative reset countdown so `Resets in ...` is recalculated from an explicit app clock instead of relying on implicit SwiftUI view refreshes.
+- Keep the absolute reset time sourced from CodexBar local `resetsAt` data while refreshing the relative countdown every 30 seconds.
+- Ensure expired reset windows display `0h0m` instead of a stale remaining duration.
+
 ## v1.0.2 - 2026-05-22
 
 - Added a DIY last-good Codex snapshot cache so offline refresh failures keep showing the most recent successful per-account quota data.

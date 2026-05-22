@@ -5,6 +5,7 @@ import SwiftUI
 final class QuotaViewModel: ObservableObject {
     @Published private(set) var state = WidgetState(message: "正在读取数据")
     @Published private(set) var switchMessage: String?
+    @Published private(set) var now = Date()
     var onStateChange: (() -> Void)?
 
     private let store = DataStore()
@@ -12,14 +13,18 @@ final class QuotaViewModel: ObservableObject {
 
     func start() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func refresh() {
+        now = Date()
+
         do {
             state = try store.load()
         } catch {
@@ -78,7 +83,7 @@ struct QuotaView: View {
                             .padding(.horizontal, 2)
                             .padding(.vertical, 8)
                     }
-                    AccountQuotaView(account: account) {
+                    AccountQuotaView(account: account, now: viewModel.now) {
                         viewModel.switchAccount(account)
                     }
                 }
@@ -159,6 +164,7 @@ struct QuotaView: View {
 
 private struct AccountQuotaView: View {
     let account: AccountQuota
+    let now: Date
     let onSwitch: () -> Void
 
     var body: some View {
@@ -235,7 +241,7 @@ private struct AccountQuotaView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             } else {
                 ForEach(account.windows) { window in
-                    QuotaWindowView(window: window)
+                    QuotaWindowView(window: window, now: now)
                 }
             }
         }
@@ -301,6 +307,7 @@ private struct ProviderLogo: View {
 
 private struct QuotaWindowView: View {
     let window: QuotaWindow
+    let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -393,7 +400,7 @@ private struct QuotaWindowView: View {
             return "--"
         }
 
-        let seconds = max(0, Int(resetDate.timeIntervalSinceNow))
+        let seconds = max(0, Int(resetDate.timeIntervalSince(now)))
         let days = seconds / 86_400
         let hours = (seconds % 86_400) / 3_600
         let minutes = (seconds % 3_600) / 60
