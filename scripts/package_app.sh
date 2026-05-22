@@ -19,6 +19,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$ROOT_DIR/packaging/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
 chmod 755 "$MACOS_DIR/$APP_NAME"
+swift "$ROOT_DIR/scripts/make_app_icon.swift" "$RESOURCES_DIR/AppIcon.icns"
 
 codesign --force --deep --sign - "$APP_DIR"
 

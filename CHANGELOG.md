@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.4 - 2026-05-22
+
+- Added a cross-path single-instance lock so launching the downloaded `.app` and local helper binary at the same time does not create duplicate menu bar icons.
+- Added a generated macOS app icon and packaged it as `AppIcon.icns`.
+- Updated the app bundle metadata so Finder and the Downloads folder show the custom icon.
+
 ## v1.0.3 - 2026-05-22
 
 - Fixed the relative reset countdown so `Resets in ...` is recalculated from an explicit app clock instead of relying on implicit SwiftUI view refreshes.

@@ -1,13 +1,21 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var instanceLock: SingleInstanceLock?
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private let viewModel = QuotaViewModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard let instanceLock = SingleInstanceLock.acquire() else {
+            NSApp.terminate(nil)
+            return
+        }
+
+        self.instanceLock = instanceLock
         NSApp.setActivationPolicy(.accessory)
         setupPopover()
         setupStatusItem()
@@ -100,5 +108,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quitFromMenu() {
         NSApp.terminate(nil)
+    }
+}
+
+private final class SingleInstanceLock {
+    private let fileDescriptor: Int32
+
+    private init(fileDescriptor: Int32) {
+        self.fileDescriptor = fileDescriptor
+    }
+
+    static func acquire() -> SingleInstanceLock? {
+        let fileManager = FileManager.default
+        let supportURL = fileManager
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CodexBarQuotaMenuBar")
+
+        do {
+            try fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+
+        let lockPath = supportURL.appendingPathComponent("app.lock").path
+        let fileDescriptor = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fileDescriptor >= 0 else {
+            return nil
+        }
+
+        guard flock(fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(fileDescriptor)
+            return nil
+        }
+
+        ftruncate(fileDescriptor, 0)
+        let pidText = "\(getpid())\n"
+        pidText.withCString {
+            _ = write(fileDescriptor, $0, strlen($0))
+        }
+
+        return SingleInstanceLock(fileDescriptor: fileDescriptor)
+    }
+
+    deinit {
+        flock(fileDescriptor, LOCK_UN)
+        close(fileDescriptor)
     }
 }
