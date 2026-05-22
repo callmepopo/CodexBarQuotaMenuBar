@@ -73,7 +73,7 @@ struct CodexSnapshot: Decodable {
     let updatedAt: FlexibleString?
 }
 
-struct QuotaWindow: Decodable, Identifiable {
+struct QuotaWindow: Codable, Equatable, Identifiable {
     var id: Int { windowMinutes }
 
     let usedPercent: Int
@@ -109,6 +109,14 @@ struct QuotaWindow: Decodable, Identifiable {
         isNotStarted = false
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(usedPercent, forKey: .usedPercent)
+        try container.encodeIfPresent(resetDescription, forKey: .resetDescription)
+        try container.encodeIfPresent(resetsAt, forKey: .resetsAt)
+        try container.encode(windowMinutes, forKey: .windowMinutes)
+    }
+
     func markedNotStarted(displayUsedPercent: Int? = nil) -> QuotaWindow {
         QuotaWindow(
             usedPercent: usedPercent,
@@ -128,7 +136,7 @@ struct QuotaWindow: Decodable, Identifiable {
     }
 }
 
-struct FlexibleString: Decodable {
+struct FlexibleString: Codable, Equatable {
     let value: String
 
     init(value: String?) {
@@ -144,8 +152,18 @@ struct FlexibleString: Decodable {
         } else if let int = try? container.decode(Int.self) {
             value = String(int)
         } else {
-            value = ""
+            let keyedContainer = try? decoder.container(keyedBy: CodingKeys.self)
+            value = (try? keyedContainer?.decode(String.self, forKey: .value)) ?? ""
         }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case value
     }
 }
 

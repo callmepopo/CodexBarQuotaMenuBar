@@ -2,8 +2,10 @@ import Foundation
 
 final class DataStore {
     private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
     private let fileManager = FileManager.default
     private let notStartedResetTolerance: TimeInterval = 120
+    private let lastGoodCodexSnapshotCacheVersion = 1
 
     private var homeDirectory: URL {
         fileManager.homeDirectoryForCurrentUser
@@ -42,6 +44,14 @@ final class DataStore {
         homeDirectory.appendingPathComponent(".codex/auth-backups")
     }
 
+    private var appSupportURL: URL {
+        homeDirectory.appendingPathComponent("Library/Application Support/CodexBarQuotaMenuBar")
+    }
+
+    private var lastGoodCodexSnapshotsURL: URL {
+        appSupportURL.appendingPathComponent("last-good-codex-snapshots.json")
+    }
+
     func load() throws -> WidgetState {
         let providerState = try decode(ProviderState.self, from: widgetSnapshotURL)
         let enabled = Set(providerState.enabledProviders.map { $0.lowercased() })
@@ -71,6 +81,9 @@ final class DataStore {
         let snapshotStore = try? decode(CodexSnapshotStore.self, from: codexSnapshotsURL)
         let historyStore = try? decode(CodexHistoryStore.self, from: codexHistoryURL)
         let activeEmail = codexAuthIdentity(at: activeCodexAuthURL).email?.lowercased()
+        var snapshotCache = loadLastGoodCodexSnapshotCache()
+        var cacheDidChange = lastGoodCodexSnapshotCacheNeedsRewrite()
+        let currentCacheKeys = Set(accountStore.accounts.map { codexSnapshotCacheKey(for: $0) })
         var snapshotsByKey: [String: CodexSnapshot] = [:]
 
         for record in snapshotStore?.records ?? [] {
@@ -84,9 +97,18 @@ final class DataStore {
             }
         }
 
-        return accountStore.accounts.map { account in
+        snapshotCache.accounts.keys
+            .filter { !currentCacheKeys.contains($0) }
+            .forEach {
+                snapshotCache.accounts.removeValue(forKey: $0)
+                cacheDidChange = true
+            }
+
+        let accounts = accountStore.accounts.map { account in
             let lookupKeys = [account.email, account.id].compactMap { $0?.lowercased() }
             let snapshot = lookupKeys.lazy.compactMap { snapshotsByKey[$0] }.first
+            let cacheKey = codexSnapshotCacheKey(for: account)
+            let cachedSnapshot = snapshotCache.accounts[cacheKey].map { codexSnapshot(from: $0) }
             let sourceAuthPath = account.managedHomePath.map {
                 URL(fileURLWithPath: $0).appendingPathComponent("auth.json").path
             }
@@ -102,6 +124,13 @@ final class DataStore {
                     capturedAt: snapshot.updatedAt?.value
                 )
                 if !windows.isEmpty {
+                    let cachedSnapshot = cachedCodexSnapshot(from: snapshot)
+                    if snapshotCache.accounts[cacheKey] != cachedSnapshot {
+                        snapshotCache.accounts[cacheKey] = cachedSnapshot
+                        snapshotCache.updatedAt = isoTimestamp()
+                        cacheDidChange = true
+                    }
+
                     return AccountQuota(
                         id: "codex-\(account.id)",
                         provider: "Codex",
@@ -110,6 +139,26 @@ final class DataStore {
                         windows: windows,
                         updatedAt: snapshot.updatedAt?.value,
                         status: nil,
+                        switchSourceAuthPath: sourceAuthPath,
+                        isActive: isActive
+                    )
+                }
+            }
+
+            if let cachedSnapshot {
+                let windows = normalizeCodexWindows(
+                    [cachedSnapshot.primary, cachedSnapshot.secondary].compactMap { $0 },
+                    capturedAt: cachedSnapshot.updatedAt?.value
+                )
+                if !windows.isEmpty {
+                    return AccountQuota(
+                        id: "codex-\(account.id)",
+                        provider: "Codex",
+                        displayName: Privacy.maskedEmail(displayEmail),
+                        subscription: displaySubscription(cachedSnapshot.loginMethod ?? authPlan),
+                        windows: windows,
+                        updatedAt: cachedSnapshot.updatedAt?.value,
+                        status: "历史数据 / 需重新认证",
                         switchSourceAuthPath: sourceAuthPath,
                         isActive: isActive
                     )
@@ -129,6 +178,12 @@ final class DataStore {
                 isActive: isActive
             )
         }
+
+        if cacheDidChange {
+            try? saveLastGoodCodexSnapshotCache(snapshotCache)
+        }
+
+        return accounts
     }
 
     func switchCodexAccount(sourceAuthPath: String) throws {
@@ -198,7 +253,7 @@ final class DataStore {
 
         return historyStore.accounts.sorted { $0.key < $1.key }.compactMap { key, histories in
             let windows = histories.compactMap { history -> QuotaWindow? in
-                guard let latest = history.entries.last else {
+                guard let latest = latestHistoryEntry(history.entries) else {
                     return nil
                 }
 
@@ -214,7 +269,8 @@ final class DataStore {
                 return nil
             }
 
-            let latestCapture = histories.compactMap { $0.entries.last?.capturedAt }.sorted().last
+            let latestCapture = histories.compactMap { latestHistoryEntry($0.entries)?.capturedAt }
+                .max { isOlderCapturedAt($0, than: $1) }
             return AccountQuota(
                 id: "claude-\(key)",
                 provider: "Claude",
@@ -248,7 +304,7 @@ final class DataStore {
         }
 
         let windows = histories.compactMap { history -> QuotaWindow? in
-            guard let latest = history.entries.last else {
+            guard let latest = latestHistoryEntry(history.entries) else {
                 return nil
             }
 
@@ -265,8 +321,100 @@ final class DataStore {
             return nil
         }
 
-        let latestCapture = histories.compactMap { $0.entries.last?.capturedAt }.sorted().last
+        let latestCapture = histories.compactMap { latestHistoryEntry($0.entries)?.capturedAt }
+            .max { isOlderCapturedAt($0, than: $1) }
         return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, latestCapture)
+    }
+
+    private func loadLastGoodCodexSnapshotCache() -> LastGoodCodexSnapshotCache {
+        guard let cache = try? decode(LastGoodCodexSnapshotCache.self, from: lastGoodCodexSnapshotsURL) else {
+            return LastGoodCodexSnapshotCache(
+                version: lastGoodCodexSnapshotCacheVersion,
+                updatedAt: nil,
+                accounts: [:]
+            )
+        }
+
+        guard cache.version == lastGoodCodexSnapshotCacheVersion else {
+            return LastGoodCodexSnapshotCache(
+                version: lastGoodCodexSnapshotCacheVersion,
+                updatedAt: nil,
+                accounts: [:]
+            )
+        }
+
+        return cache
+    }
+
+    private func saveLastGoodCodexSnapshotCache(_ cache: LastGoodCodexSnapshotCache) throws {
+        try fileManager.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(cache)
+        try data.write(to: lastGoodCodexSnapshotsURL, options: [.atomic])
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lastGoodCodexSnapshotsURL.path)
+    }
+
+    private func lastGoodCodexSnapshotCacheNeedsRewrite() -> Bool {
+        guard
+            let data = try? Data(contentsOf: lastGoodCodexSnapshotsURL),
+            let raw = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+
+        return raw.contains("\"value\"")
+    }
+
+    private func codexSnapshotCacheKey(for account: ManagedCodexAccount) -> String {
+        if let providerAccountID = account.providerAccountID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerAccountID.isEmpty {
+            return "provider-account:\(providerAccountID.lowercased())"
+        }
+
+        return "managed-account:\(account.id.lowercased())"
+    }
+
+    private func cachedCodexSnapshot(from snapshot: CodexSnapshot) -> CachedCodexSnapshot {
+        CachedCodexSnapshot(
+            loginMethod: snapshot.loginMethod,
+            primary: snapshot.primary,
+            secondary: snapshot.secondary,
+            updatedAt: snapshot.updatedAt
+        )
+    }
+
+    private func codexSnapshot(from cached: CachedCodexSnapshot) -> CodexSnapshot {
+        CodexSnapshot(
+            accountEmail: nil,
+            loginMethod: cached.loginMethod,
+            primary: cached.primary,
+            secondary: cached.secondary,
+            updatedAt: cached.updatedAt
+        )
+    }
+
+    private func latestHistoryEntry(_ entries: [ClaudeHistoryEntry]) -> ClaudeHistoryEntry? {
+        entries.max { isOlderCapturedAt($0.capturedAt, than: $1.capturedAt) }
+    }
+
+    private func latestHistoryEntry(_ entries: [CodexHistoryEntry]) -> CodexHistoryEntry? {
+        entries.max { isOlderCapturedAt($0.capturedAt, than: $1.capturedAt) }
+    }
+
+    private func isOlderCapturedAt(_ lhs: String?, than rhs: String?) -> Bool {
+        if let lhsDate = quotaDate(from: lhs), let rhsDate = quotaDate(from: rhs) {
+            return lhsDate < rhsDate
+        }
+
+        if quotaDate(from: lhs) == nil, quotaDate(from: rhs) != nil {
+            return true
+        }
+
+        if quotaDate(from: lhs) != nil, quotaDate(from: rhs) == nil {
+            return false
+        }
+
+        return (lhs ?? "") < (rhs ?? "")
     }
 
     private func normalizeCodexWindows(_ windows: [QuotaWindow], capturedAt: String?) -> [QuotaWindow] {
@@ -428,10 +576,27 @@ final class DataStore {
         return formatter.string(from: Date())
     }
 
+    private func isoTimestamp() -> String {
+        ISO8601DateFormatter().string(from: Date())
+    }
+
     private func decode<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
         let data = try Data(contentsOf: url)
         return try decoder.decode(type, from: data)
     }
+}
+
+private struct LastGoodCodexSnapshotCache: Codable {
+    let version: Int
+    var updatedAt: String?
+    var accounts: [String: CachedCodexSnapshot]
+}
+
+private struct CachedCodexSnapshot: Codable, Equatable {
+    let loginMethod: String?
+    let primary: QuotaWindow?
+    let secondary: QuotaWindow?
+    let updatedAt: FlexibleString?
 }
 
 private struct CodexAuth: Decodable {

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.2 - 2026-05-22
+
+- Added a DIY last-good Codex snapshot cache so offline refresh failures keep showing the most recent successful per-account quota data.
+- Store only one latest successful snapshot per Codex account; cache entries are overwritten instead of appended.
+- Prefer the DIY cache before falling back to older CodexBar history when `codex-account-snapshots.json` contains network errors.
+- Avoid storing full email addresses, tokens, cookies, API keys, or auth file contents in the DIY cache.
+- Select the latest history entry by `capturedAt` instead of relying on JSON array order.
+
 ## v1.0.1 - 2026-05-21
 
 - Refined Codex `Not started yet` detection so the 5-hour and 1-week quota windows are evaluated independently.
