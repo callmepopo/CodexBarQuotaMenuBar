@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.5 - 2026-05-22
+
+- Changed the local launch command to start the menu bar app as a normal background process instead of a `launchctl submit` job.
+- Ensured choosing Quit exits the DIY menu bar app without being relaunched by the helper startup script.
+
 ## v1.0.4 - 2026-05-22
 
 - Added a cross-path single-instance lock so launching the downloaded `.app` and local helper binary at the same time does not create duplicate menu bar icons.
