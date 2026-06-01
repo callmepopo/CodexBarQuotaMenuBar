@@ -9,7 +9,9 @@ final class QuotaViewModel: ObservableObject {
     var onStateChange: (() -> Void)?
 
     private let store = DataStore()
+    private let refreshQueue = DispatchQueue(label: "CodexBarQuotaMenuBar.refresh")
     private var timer: Timer?
+    private var isRefreshing = false
 
     func start() {
         refresh()
@@ -23,6 +25,43 @@ final class QuotaViewModel: ObservableObject {
     }
 
     func refresh() {
+        guard !isRefreshing else {
+            return
+        }
+
+        isRefreshing = true
+        now = Date()
+
+        refreshQueue.async { [weak self] in
+            let result = Result {
+                try DataStore().load()
+            }
+
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+
+                self.isRefreshing = false
+
+                switch result {
+                case .success(let newState):
+                    self.state = newState
+                case .failure:
+                    if self.state.accounts.isEmpty {
+                        self.state = WidgetState(accounts: [], lastUpdated: self.state.lastUpdated, stale: true, message: "数据未更新")
+                    } else {
+                        self.state.stale = true
+                        self.state.message = "数据未更新"
+                    }
+                }
+
+                self.onStateChange?()
+            }
+        }
+    }
+
+    func refreshNow() {
         now = Date()
 
         do {
@@ -55,7 +94,7 @@ final class QuotaViewModel: ObservableObject {
         do {
             try store.switchCodexAccount(sourceAuthPath: sourceAuthPath)
             switchMessage = "切换成功，重开终端生效"
-            refresh()
+            refreshNow()
         } catch {
             switchMessage = error.localizedDescription
             onStateChange?()

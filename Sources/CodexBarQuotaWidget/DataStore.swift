@@ -138,6 +138,22 @@ final class DataStore {
                         cacheDidChange = true
                     }
 
+                    if let history,
+                       !history.windows.isEmpty,
+                       isOlderCapturedAt(snapshot.updatedAt?.value, than: history.updatedAt) {
+                        return AccountQuota(
+                            id: "codex-\(account.id)",
+                            provider: "Codex",
+                            displayName: Privacy.maskedEmail(displayEmail),
+                            subscription: displaySubscription(authPlan),
+                            windows: history.windows,
+                            updatedAt: history.updatedAt,
+                            status: codexHistoryStatus(updatedAt: history.updatedAt),
+                            switchSourceAuthPath: sourceAuthPath,
+                            isActive: isActive
+                        )
+                    }
+
                     return AccountQuota(
                         id: "codex-\(account.id)",
                         provider: "Codex",

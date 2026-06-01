@@ -6,6 +6,8 @@
 - Added provider account ID lookup for Codex snapshots to better match CodexBar's account keys.
 - Changed the local helper launch command to start the menu bar app through `launchctl submit`, keeping the process alive after the Terminal window closes.
 - Fixed Quit so the app removes the helper `launchctl` job before terminating, preventing the menu bar process from being relaunched immediately.
+- Made left-click opening immediate by showing the quota popover before running the local data refresh.
+- Prefer newer CodexBar history data over older valid snapshots so recently refreshed account quota usage is shown promptly.
 
 ## v1.0.5 - 2026-05-22
 
