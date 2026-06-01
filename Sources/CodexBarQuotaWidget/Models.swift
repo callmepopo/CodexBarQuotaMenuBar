@@ -29,14 +29,30 @@ struct CodexSnapshotStore: Decodable {
     let records: [CodexSnapshotRecord]
 }
 
+struct CodexHistoryStore: Decodable {
+    let accounts: [String: [CodexWindowHistory]]
+}
+
 struct ClaudeHistoryStore: Decodable {
     let accounts: [String: [ClaudeWindowHistory]]
+}
+
+struct CodexWindowHistory: Decodable {
+    let name: String?
+    let windowMinutes: Int
+    let entries: [CodexHistoryEntry]
 }
 
 struct ClaudeWindowHistory: Decodable {
     let name: String?
     let windowMinutes: Int
     let entries: [ClaudeHistoryEntry]
+}
+
+struct CodexHistoryEntry: Decodable {
+    let capturedAt: String?
+    let resetsAt: String?
+    let usedPercent: Int
 }
 
 struct ClaudeHistoryEntry: Decodable {

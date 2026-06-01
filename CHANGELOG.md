@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## v2.0.0 - 2026-06-01
 
+- Added adaptive Codex quota loading for CodexBar's segmented and stacked multi-account layouts.
+- In segmented layout, read current workspace quota pools from CodexBar history so DIY does not display stale account snapshots.
+- In stacked layout, keep using CodexBar account snapshots and preserve per-login re-authentication errors.
 - Matched Codex account quota rows using CodexBar's visible account id logic instead of the shared provider/workspace key.
 - Stopped using Codex history or provider-key cache data to fill a different Codex login that shares the same workspace quota pool.
 - Show CodexBar snapshot errors such as re-authentication requirements on the affected login account instead of borrowing another account's quota.
+- Fixed reset-time formatting when CodexBar only returns a display label, avoiding `Resets in --` next to an absolute reset label.
 
 ## v1.0.5 - 2026-05-22
 

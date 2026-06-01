@@ -26,9 +26,19 @@ final class DataStore {
             .appendingPathComponent("Library/Application Support/CodexBar/codex-account-snapshots.json")
     }
 
+    private var codexHistoryURL: URL {
+        homeDirectory
+            .appendingPathComponent("Library/Application Support/com.steipete.codexbar/history/codex.json")
+    }
+
     private var claudeHistoryURL: URL {
         homeDirectory
             .appendingPathComponent("Library/Application Support/com.steipete.codexbar/history/claude.json")
+    }
+
+    private var codexBarPreferencesURL: URL {
+        homeDirectory
+            .appendingPathComponent("Library/Preferences/com.steipete.codexbar.plist")
     }
 
     private var activeCodexAuthURL: URL {
@@ -45,6 +55,10 @@ final class DataStore {
 
     private var lastGoodCodexSnapshotsURL: URL {
         appSupportURL.appendingPathComponent("last-good-codex-snapshots.json")
+    }
+
+    private var codexBarCLIURL: URL {
+        URL(fileURLWithPath: "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI")
     }
 
     func load() throws -> WidgetState {
@@ -69,6 +83,15 @@ final class DataStore {
     }
 
     private func loadCodexAccounts() -> [AccountQuota] {
+        switch codexBarMultiAccountLayout() {
+        case .stacked:
+            return loadStackedCodexAccounts()
+        case .segmented:
+            return loadSegmentedCodexAccounts()
+        }
+    }
+
+    private func loadStackedCodexAccounts() -> [AccountQuota] {
         guard let accountStore = try? decode(ManagedCodexAccounts.self, from: managedCodexAccountsURL) else {
             return []
         }
@@ -200,6 +223,177 @@ final class DataStore {
         return accounts
     }
 
+    private func loadSegmentedCodexAccounts() -> [AccountQuota] {
+        guard let accountStore = try? decode(ManagedCodexAccounts.self, from: managedCodexAccountsURL) else {
+            return []
+        }
+
+        let snapshotCache = loadLastGoodCodexSnapshotCache()
+        let historyStore = try? decode(CodexHistoryStore.self, from: codexHistoryURL)
+        let activeIdentity = codexAuthIdentity(at: activeCodexAuthURL)
+        let activeEmail = activeIdentity.email?.lowercased()
+        let activeWidgetSnapshot = loadCurrentCodexWidgetSnapshot()
+
+        return accountStore.accounts.map { account in
+            let sourceAuthPath = account.managedHomePath.map {
+                URL(fileURLWithPath: $0).appendingPathComponent("auth.json").path
+            }
+            let authIdentity = sourceAuthPath.map { codexAuthIdentity(at: URL(fileURLWithPath: $0)) }
+            let authEmail = authIdentity.flatMap { $0.email }
+            let authPlan = authIdentity.flatMap { $0.plan }
+            let displayEmail = account.email ?? authEmail
+            let isActive = displayEmail?.lowercased() == activeEmail
+            let cachedSnapshot = snapshotCache.accounts[codexSnapshotCacheKey(for: account)]
+            let cached = cachedSnapshot.map { codexSnapshot(from: $0) }
+            let accountHistory = if let cached {
+                codexWindows(
+                    from: cached,
+                    fallbackUpdatedAt: cachedSnapshot?.updatedAt?.value,
+                    status: cachedSnapshot?.error.flatMap(codexSnapshotStatus(for:)))
+            } else if let activeWidgetSnapshot,
+                      normalizedEmail(displayEmail) == activeEmail
+            {
+                activeWidgetSnapshot
+            } else {
+                loadCodexHistory(for: account, from: historyStore)
+            }
+
+            return AccountQuota(
+                id: "codex-\(account.id)",
+                provider: "Codex",
+                displayName: Privacy.maskedEmail(displayEmail),
+                subscription: displaySubscription(cached?.loginMethod ?? authPlan),
+                windows: accountHistory?.windows ?? [],
+                updatedAt: accountHistory?.updatedAt,
+                status: accountHistory?.status ?? (accountHistory == nil ? "等待账号级刷新" : nil),
+                switchSourceAuthPath: sourceAuthPath,
+                isActive: isActive
+            )
+        }
+    }
+
+    func usesSegmentedCodexLayout() -> Bool {
+        codexBarMultiAccountLayout() == .segmented
+    }
+
+    func refreshSegmentedCodexAccountsUsingCodexBarCLI(timeout: TimeInterval = 90) throws {
+        guard self.usesSegmentedCodexLayout() else { return }
+        guard fileManager.fileExists(atPath: codexBarCLIURL.path) else {
+            throw DataStoreError.missingCodexBarCLI
+        }
+        guard let accountStore = try? decode(ManagedCodexAccounts.self, from: managedCodexAccountsURL) else {
+            return
+        }
+
+        let accountsByEmail = codexAccountsByEmail(accountStore.accounts)
+        let data = try runCodexBarCLI(timeout: timeout)
+        let payloads = try decoder.decode([CodexCLIProviderPayload].self, from: data)
+
+        var snapshotCache = loadLastGoodCodexSnapshotCache()
+        let currentCacheKeys = Set(accountStore.accounts.map { codexSnapshotCacheKey(for: $0) })
+        snapshotCache.accounts.keys
+            .filter { !currentCacheKeys.contains($0) }
+            .forEach { snapshotCache.accounts.removeValue(forKey: $0) }
+
+        var didUpdate = false
+        for payload in payloads {
+            let email = normalizedEmail(payload.usage?.accountEmail) ?? normalizedEmail(payload.account)
+            guard let email, let account = accountsByEmail[email] else {
+                continue
+            }
+
+            let cacheKey = codexSnapshotCacheKey(for: account)
+            if let usage = payload.usage {
+                snapshotCache.accounts[cacheKey] = cachedCodexSnapshot(
+                    from: usage,
+                    error: payload.error?.message)
+                didUpdate = true
+            } else if let message = payload.error?.message {
+                let existing = snapshotCache.accounts[cacheKey]
+                snapshotCache.accounts[cacheKey] = CachedCodexSnapshot(
+                    loginMethod: existing?.loginMethod,
+                    primary: existing?.primary,
+                    secondary: existing?.secondary,
+                    updatedAt: existing?.updatedAt,
+                    error: message)
+                didUpdate = true
+            }
+        }
+
+        guard didUpdate else { return }
+        snapshotCache.updatedAt = isoTimestamp()
+        try saveLastGoodCodexSnapshotCache(snapshotCache)
+    }
+
+    private func runCodexBarCLI(timeout: TimeInterval) throws -> Data {
+        let process = Process()
+        process.executableURL = codexBarCLIURL
+        process.arguments = [
+            "usage",
+            "--provider", "codex",
+            "--all-accounts",
+            "--format", "json",
+            "--no-credits",
+            "--no-color",
+        ]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            throw DataStoreError.codexBarCLITimedOut
+        }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw DataStoreError.codexBarCLIFailed(message?.isEmpty == false ? message : nil)
+        }
+        return output
+    }
+
+    private func codexAccountsByEmail(_ accounts: [ManagedCodexAccount]) -> [String: ManagedCodexAccount] {
+        var result: [String: ManagedCodexAccount] = [:]
+        for account in accounts {
+            if let email = normalizedEmail(account.email) {
+                result[email] = account
+            }
+            if let path = account.managedHomePath {
+                let identity = codexAuthIdentity(at: URL(fileURLWithPath: path).appendingPathComponent("auth.json"))
+                if let email = normalizedEmail(identity.email) {
+                    result[email] = account
+                }
+            }
+        }
+        return result
+    }
+
+    private func loadCurrentCodexWidgetSnapshot() -> (windows: [QuotaWindow], updatedAt: String?, status: String?)? {
+        guard let providerState = try? decode(ProviderState.self, from: widgetSnapshotURL),
+              let entry = providerState.entries.first(where: { $0.provider.lowercased() == "codex" })
+        else {
+            return nil
+        }
+
+        let windows = normalizeCodexWindows(
+            [entry.primary, entry.secondary].compactMap { $0 },
+            capturedAt: entry.updatedAt
+        )
+        guard !windows.isEmpty else {
+            return nil
+        }
+
+        return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, entry.updatedAt, nil)
+    }
+
     func switchCodexAccount(sourceAuthPath: String) throws {
         let sourceURL = URL(fileURLWithPath: sourceAuthPath)
         guard fileManager.fileExists(atPath: sourceURL.path) else {
@@ -299,6 +493,48 @@ final class DataStore {
         }
     }
 
+    private func loadCodexHistory(
+        for account: ManagedCodexAccount,
+        from historyStore: CodexHistoryStore?
+    ) -> (windows: [QuotaWindow], updatedAt: String?, status: String?)? {
+        guard let historyStore else {
+            return nil
+        }
+
+        let keyCandidates = [
+            account.providerAccountID.map { "codex:v1:provider-account:\($0)" },
+            account.workspaceAccountID.map { "codex:v1:provider-account:\($0)" },
+            account.email,
+            account.id,
+        ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+        guard let histories = keyCandidates.lazy.compactMap({ historyStore.accounts[$0] }).first else {
+            return nil
+        }
+
+        let windows = histories.compactMap { history -> QuotaWindow? in
+            guard let latest = latestHistoryEntry(history.entries) else {
+                return nil
+            }
+
+            let window = QuotaWindow(
+                usedPercent: latest.usedPercent,
+                resetDescription: formatResetDescription(latest.resetsAt),
+                resetsAt: FlexibleString(value: latest.resetsAt),
+                windowMinutes: history.windowMinutes
+            )
+            return normalizeCodexWindow(window, capturedAt: latest.capturedAt)
+        }
+
+        guard !windows.isEmpty else {
+            return nil
+        }
+
+        let latestCapture = histories.compactMap { latestHistoryEntry($0.entries)?.capturedAt }
+            .max { isOlderCapturedAt($0, than: $1) }
+        return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, latestCapture, "历史数据 / 等待账号级刷新")
+    }
+
     private func loadLastGoodCodexSnapshotCache() -> LastGoodCodexSnapshotCache {
         guard let cache = try? decode(LastGoodCodexSnapshotCache.self, from: lastGoodCodexSnapshotsURL) else {
             return LastGoodCodexSnapshotCache(
@@ -383,12 +619,26 @@ final class DataStore {
         return "暂不可用"
     }
 
-    private func cachedCodexSnapshot(from snapshot: CodexSnapshot) -> CachedCodexSnapshot {
+    private func codexBarMultiAccountLayout() -> CodexBarMultiAccountLayout {
+        guard
+            let data = try? Data(contentsOf: codexBarPreferencesURL),
+            let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+            let preferences = object as? [String: Any],
+            let rawValue = preferences["multiAccountMenuLayout"] as? String
+        else {
+            return .segmented
+        }
+
+        return CodexBarMultiAccountLayout(rawValue: rawValue) ?? .segmented
+    }
+
+    private func cachedCodexSnapshot(from snapshot: CodexSnapshot, error: String? = nil) -> CachedCodexSnapshot {
         CachedCodexSnapshot(
             loginMethod: snapshot.loginMethod,
             primary: snapshot.primary,
             secondary: snapshot.secondary,
-            updatedAt: snapshot.updatedAt
+            updatedAt: snapshot.updatedAt,
+            error: error
         )
     }
 
@@ -400,6 +650,27 @@ final class DataStore {
             secondary: cached.secondary,
             updatedAt: cached.updatedAt
         )
+    }
+
+    private func codexWindows(
+        from snapshot: CodexSnapshot,
+        fallbackUpdatedAt: String?,
+        status: String?)
+        -> (windows: [QuotaWindow], updatedAt: String?, status: String?)?
+    {
+        let updatedAt = snapshot.updatedAt?.value ?? fallbackUpdatedAt
+        let windows = normalizeCodexWindows(
+            [snapshot.primary, snapshot.secondary].compactMap { $0 },
+            capturedAt: updatedAt
+        )
+        guard !windows.isEmpty else {
+            return nil
+        }
+        return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, updatedAt, status)
+    }
+
+    private func latestHistoryEntry(_ entries: [CodexHistoryEntry]) -> CodexHistoryEntry? {
+        entries.max { isOlderCapturedAt($0.capturedAt, than: $1.capturedAt) }
     }
 
     private func latestHistoryEntry(_ entries: [ClaudeHistoryEntry]) -> ClaudeHistoryEntry? {
@@ -534,19 +805,20 @@ final class DataStore {
         }
     }
 
-    private func codexAuthIdentity(at url: URL) -> (email: String?, plan: String?) {
+    private func codexAuthIdentity(at url: URL) -> (email: String?, plan: String?, providerAccountID: String?) {
         guard
             let auth = try? decode(CodexAuth.self, from: url),
             let idToken = auth.tokens?.idToken,
             let payload = decodeJWTClaims(from: idToken)
         else {
-            return (nil, nil)
+            return (nil, nil, nil)
         }
 
         let email = payload["email"] as? String
         let authClaims = payload["https://api.openai.com/auth"] as? [String: Any]
         let plan = authClaims?["chatgpt_plan_type"] as? String
-        return (email, plan)
+        let providerAccountID = authClaims?["chatgpt_account_id"] as? String
+        return (email, plan, providerAccountID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private func decodeJWTClaims(from token: String) -> [String: Any]? {
@@ -602,6 +874,17 @@ private struct CachedCodexSnapshot: Codable, Equatable {
     let primary: QuotaWindow?
     let secondary: QuotaWindow?
     let updatedAt: FlexibleString?
+    let error: String?
+}
+
+private struct CodexCLIProviderPayload: Decodable {
+    let account: String?
+    let usage: CodexSnapshot?
+    let error: CodexCLIErrorPayload?
+}
+
+private struct CodexCLIErrorPayload: Decodable {
+    let message: String?
 }
 
 private struct CodexAuth: Decodable {
@@ -616,13 +899,27 @@ private struct CodexAuth: Decodable {
     }
 }
 
+private enum CodexBarMultiAccountLayout: String {
+    case segmented
+    case stacked
+}
+
 private enum DataStoreError: LocalizedError {
     case missingManagedAuth
+    case missingCodexBarCLI
+    case codexBarCLITimedOut
+    case codexBarCLIFailed(String?)
 
     var errorDescription: String? {
         switch self {
         case .missingManagedAuth:
             return "CodexBar 保存的账号授权文件不存在"
+        case .missingCodexBarCLI:
+            return "CodexBarCLI 不存在"
+        case .codexBarCLITimedOut:
+            return "CodexBarCLI 刷新超时"
+        case let .codexBarCLIFailed(message):
+            return message ?? "CodexBarCLI 刷新失败"
         }
     }
 }

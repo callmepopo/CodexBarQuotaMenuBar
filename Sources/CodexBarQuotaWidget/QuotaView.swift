@@ -10,6 +10,9 @@ final class QuotaViewModel: ObservableObject {
 
     private let store = DataStore()
     private var timer: Timer?
+    private var codexCLIRefreshInFlight = false
+    private var lastCodexCLIRefreshAt: Date?
+    private let codexCLIRefreshInterval: TimeInterval = 300
 
     func start() {
         refresh()
@@ -22,7 +25,12 @@ final class QuotaViewModel: ObservableObject {
         self.timer = timer
     }
 
-    func refresh() {
+    func refresh(forceRemote: Bool = false) {
+        refreshLocalState()
+        refreshCodexAccountsFromCLIIfNeeded(force: forceRemote)
+    }
+
+    private func refreshLocalState() {
         now = Date()
 
         do {
@@ -37,6 +45,36 @@ final class QuotaViewModel: ObservableObject {
         }
 
         onStateChange?()
+    }
+
+    private func refreshCodexAccountsFromCLIIfNeeded(force: Bool) {
+        guard store.usesSegmentedCodexLayout() else { return }
+        guard !codexCLIRefreshInFlight else { return }
+        if !force,
+           let lastCodexCLIRefreshAt,
+           Date().timeIntervalSince(lastCodexCLIRefreshAt) < codexCLIRefreshInterval
+        {
+            return
+        }
+
+        codexCLIRefreshInFlight = true
+        Task { @MainActor in
+            let result = await Task.detached(priority: .utility) {
+                do {
+                    try DataStore().refreshSegmentedCodexAccountsUsingCodexBarCLI()
+                    return Result<Void, Error>.success(())
+                } catch {
+                    return Result<Void, Error>.failure(error)
+                }
+            }.value
+
+            self.codexCLIRefreshInFlight = false
+            self.lastCodexCLIRefreshAt = Date()
+            if case let .failure(error) = result, force {
+                self.switchMessage = error.localizedDescription
+            }
+            self.refreshLocalState()
+        }
     }
 
     func switchAccount(_ account: AccountQuota) {
@@ -55,7 +93,7 @@ final class QuotaViewModel: ObservableObject {
         do {
             try store.switchCodexAccount(sourceAuthPath: sourceAuthPath)
             switchMessage = "切换成功，重开终端生效"
-            refresh()
+            refresh(forceRemote: true)
         } catch {
             switchMessage = error.localizedDescription
             onStateChange?()
@@ -138,7 +176,7 @@ struct QuotaView: View {
             }
 
             Button {
-                viewModel.refresh()
+                viewModel.refresh(forceRemote: true)
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 12, weight: .semibold))
@@ -393,6 +431,7 @@ private struct QuotaWindowView: View {
 
     private var resetDate: Date? {
         ResetDateParser.date(from: window.resetsAt?.value)
+            ?? ResetDateParser.date(fromDisplayLabel: window.resetDescription, now: now)
     }
 
     private var resetRemainingText: String {
@@ -498,6 +537,26 @@ private enum ResetDateParser {
         return nil
     }
 
+    static func date(fromDisplayLabel value: String?, now: Date) -> Date? {
+        guard let value else {
+            return nil
+        }
+
+        let raw = value
+            .replacingOccurrences(of: "Resets in", with: "", options: [.caseInsensitive])
+            .replacingOccurrences(of: "Resets", with: "", options: [.caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, raw != "--" else {
+            return nil
+        }
+
+        if let date = date(fromTimeOnlyLabel: raw, now: now) {
+            return date
+        }
+
+        return date(fromWeekdayLabel: raw, now: now)
+    }
+
     private static func date(fromSeconds seconds: Double) -> Date {
         let referenceDate = Date(timeIntervalSinceReferenceDate: seconds)
         let unixDate = Date(timeIntervalSince1970: seconds)
@@ -516,6 +575,90 @@ private enum ResetDateParser {
         }
 
         return unixDate
+    }
+
+    private static func date(fromTimeOnlyLabel raw: String, now: Date) -> Date? {
+        let formats = ["h:mm a", "HH:mm", "H:mm"]
+        guard let parsed = parse(raw, formats: formats) else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.hour, .minute], from: parsed)
+        guard
+            let hour = components.hour,
+            let minute = components.minute,
+            var candidate = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now)
+        else {
+            return nil
+        }
+
+        if candidate < now.addingTimeInterval(-60) {
+            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+        }
+        return candidate
+    }
+
+    private static func date(fromWeekdayLabel raw: String, now: Date) -> Date? {
+        let parts = raw.split(separator: " ", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let weekday = weekdayNumber(from: parts[0]) else {
+            return nil
+        }
+        guard let parsedTime = parse(parts[1], formats: ["h:mm a", "HH:mm", "H:mm"]) else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let time = calendar.dateComponents([.hour, .minute], from: parsedTime)
+        guard let hour = time.hour, let minute = time.minute else {
+            return nil
+        }
+
+        var components = DateComponents()
+        components.weekday = weekday
+        components.hour = hour
+        components.minute = minute
+        components.second = 0
+        return calendar.nextDate(
+            after: now.addingTimeInterval(-60),
+            matching: components,
+            matchingPolicy: .nextTime,
+            direction: .forward
+        )
+    }
+
+    private static func parse(_ raw: String, formats: [String]) -> Date? {
+        for format in formats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = format
+            if let date = formatter.date(from: raw) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    private static func weekdayNumber(from raw: String) -> Int? {
+        switch raw.lowercased() {
+        case "sun", "sunday":
+            return 1
+        case "mon", "monday":
+            return 2
+        case "tue", "tues", "tuesday":
+            return 3
+        case "wed", "wednesday":
+            return 4
+        case "thu", "thur", "thurs", "thursday":
+            return 5
+        case "fri", "friday":
+            return 6
+        case "sat", "saturday":
+            return 7
+        default:
+            return nil
+        }
     }
 }
 

@@ -103,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshFromMenu() {
-        viewModel.refresh()
+        viewModel.refresh(forceRemote: true)
     }
 
     @objc private func quitFromMenu() {
