@@ -120,6 +120,7 @@ final class DataStore {
             let displayEmail = account.email ?? snapshot?.accountEmail ?? authEmail
             let isActive = displayEmail?.lowercased() == activeEmail
 
+            var selected: (windows: [QuotaWindow], updatedAt: String?, status: String?, subscription: String?)?
             if let snapshot {
                 let windows = normalizeCodexWindows(
                     [snapshot.primary, snapshot.secondary].compactMap { $0 },
@@ -133,29 +134,34 @@ final class DataStore {
                         cacheDidChange = true
                     }
 
-                    return AccountQuota(
-                        id: "codex-\(account.id)",
-                        provider: "Codex",
-                        displayName: Privacy.maskedEmail(displayEmail),
-                        subscription: displaySubscription(snapshot.loginMethod ?? authPlan),
+                    selected = (
                         windows: windows,
                         updatedAt: snapshot.updatedAt?.value,
                         status: nil,
-                        switchSourceAuthPath: sourceAuthPath,
-                        isActive: isActive
+                        subscription: displaySubscription(snapshot.loginMethod ?? authPlan)
                     )
                 }
             }
 
-            if let history {
+            if let history,
+               selected == nil || isOlderCapturedAt(selected?.updatedAt, than: history.updatedAt) {
+                selected = (
+                    windows: history.windows,
+                    updatedAt: history.updatedAt,
+                    status: codexHistoryStatus(updatedAt: history.updatedAt),
+                    subscription: displaySubscription(authPlan)
+                )
+            }
+
+            if let selected {
                 return AccountQuota(
                     id: "codex-\(account.id)",
                     provider: "Codex",
                     displayName: Privacy.maskedEmail(displayEmail),
-                    subscription: displaySubscription(authPlan),
-                    windows: history.windows,
-                    updatedAt: history.updatedAt,
-                    status: codexHistoryStatus(updatedAt: history.updatedAt),
+                    subscription: selected.subscription,
+                    windows: selected.windows,
+                    updatedAt: selected.updatedAt,
+                    status: selected.status,
                     switchSourceAuthPath: sourceAuthPath,
                     isActive: isActive
                 )

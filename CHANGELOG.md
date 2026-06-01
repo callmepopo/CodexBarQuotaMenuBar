@@ -3,7 +3,7 @@
 ## v1.0.6 - 2026-06-01
 
 - Restored the stable v1.0.5 launch, quit, and refresh behavior.
-- Fixed Codex fallback handling so accounts with failed snapshots can use fresh CodexBar history data before falling back to the DIY last-good cache.
+- Fixed Codex quota selection so each account uses the newer local CodexBar record from snapshots or history before falling back to the DIY last-good cache.
 
 ## v1.0.5 - 2026-05-22
 
