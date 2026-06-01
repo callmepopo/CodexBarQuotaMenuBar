@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.6 - 2026-06-01
+
+- Fixed Codex account quota fallback so fresh CodexBar history data is preferred over stale DIY cache data when the account snapshot contains a transient authentication error.
+- Added provider account ID lookup for Codex snapshots to better match CodexBar's account keys.
+- Changed the local helper launch command to start the menu bar app through `launchctl submit`, keeping the process alive after the Terminal window closes.
+
 ## v1.0.5 - 2026-05-22
 
 - Changed the local launch command to start the menu bar app as a normal background process instead of a `launchctl submit` job.
