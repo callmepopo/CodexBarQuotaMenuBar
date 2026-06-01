@@ -106,12 +106,7 @@ final class DataStore {
             }
 
         let accounts = accountStore.accounts.map { account in
-            let lookupKeys = [
-                account.providerAccountID.map { "codex:v1:provider-account:\($0)" },
-                account.providerAccountID,
-                account.email,
-                account.id
-            ].compactMap { $0?.lowercased() }
+            let lookupKeys = [account.email, account.id].compactMap { $0?.lowercased() }
             let snapshot = lookupKeys.lazy.compactMap { snapshotsByKey[$0] }.first
             let cacheKey = codexSnapshotCacheKey(for: account)
             let cachedSnapshot = snapshotCache.accounts[cacheKey].map { codexSnapshot(from: $0) }
@@ -138,22 +133,6 @@ final class DataStore {
                         cacheDidChange = true
                     }
 
-                    if let history,
-                       !history.windows.isEmpty,
-                       isOlderCapturedAt(snapshot.updatedAt?.value, than: history.updatedAt) {
-                        return AccountQuota(
-                            id: "codex-\(account.id)",
-                            provider: "Codex",
-                            displayName: Privacy.maskedEmail(displayEmail),
-                            subscription: displaySubscription(authPlan),
-                            windows: history.windows,
-                            updatedAt: history.updatedAt,
-                            status: codexHistoryStatus(updatedAt: history.updatedAt),
-                            switchSourceAuthPath: sourceAuthPath,
-                            isActive: isActive
-                        )
-                    }
-
                     return AccountQuota(
                         id: "codex-\(account.id)",
                         provider: "Codex",
@@ -168,28 +147,26 @@ final class DataStore {
                 }
             }
 
+            if let history {
+                return AccountQuota(
+                    id: "codex-\(account.id)",
+                    provider: "Codex",
+                    displayName: Privacy.maskedEmail(displayEmail),
+                    subscription: displaySubscription(authPlan),
+                    windows: history.windows,
+                    updatedAt: history.updatedAt,
+                    status: codexHistoryStatus(updatedAt: history.updatedAt),
+                    switchSourceAuthPath: sourceAuthPath,
+                    isActive: isActive
+                )
+            }
+
             if let cachedSnapshot {
                 let windows = normalizeCodexWindows(
                     [cachedSnapshot.primary, cachedSnapshot.secondary].compactMap { $0 },
                     capturedAt: cachedSnapshot.updatedAt?.value
                 )
                 if !windows.isEmpty {
-                    if let history,
-                       !history.windows.isEmpty,
-                       isOlderCapturedAt(cachedSnapshot.updatedAt?.value, than: history.updatedAt) {
-                        return AccountQuota(
-                            id: "codex-\(account.id)",
-                            provider: "Codex",
-                            displayName: Privacy.maskedEmail(displayEmail),
-                            subscription: displaySubscription(authPlan),
-                            windows: history.windows,
-                            updatedAt: history.updatedAt,
-                            status: codexHistoryStatus(updatedAt: history.updatedAt),
-                            switchSourceAuthPath: sourceAuthPath,
-                            isActive: isActive
-                        )
-                    }
-
                     return AccountQuota(
                         id: "codex-\(account.id)",
                         provider: "Codex",
@@ -197,7 +174,7 @@ final class DataStore {
                         subscription: displaySubscription(cachedSnapshot.loginMethod ?? authPlan),
                         windows: windows,
                         updatedAt: cachedSnapshot.updatedAt?.value,
-                        status: "历史数据",
+                        status: "历史数据 / 需重新认证",
                         switchSourceAuthPath: sourceAuthPath,
                         isActive: isActive
                     )
@@ -209,9 +186,9 @@ final class DataStore {
                 provider: "Codex",
                 displayName: Privacy.maskedEmail(displayEmail),
                 subscription: displaySubscription(authPlan),
-                windows: history?.windows ?? [],
-                updatedAt: history?.updatedAt,
-                status: history.map { codexHistoryStatus(updatedAt: $0.updatedAt) } ?? "需重新认证",
+                windows: [],
+                updatedAt: nil,
+                status: "需重新认证",
                 switchSourceAuthPath: sourceAuthPath,
                 isActive: isActive
             )

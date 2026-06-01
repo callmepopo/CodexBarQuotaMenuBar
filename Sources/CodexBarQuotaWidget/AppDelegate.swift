@@ -4,7 +4,6 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let launchJobLabel = "local.CodexBarQuotaMenuBar"
     private var instanceLock: SingleInstanceLock?
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -86,9 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            viewModel.refresh()
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
-            viewModel.refresh()
         }
     }
 
@@ -109,21 +108,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quitFromMenu() {
         NSApp.terminate(nil)
-    }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.removeLaunchJob()
-        return .terminateNow
-    }
-
-    private static func removeLaunchJob() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["remove", launchJobLabel]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
     }
 }
 
