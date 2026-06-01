@@ -1,10 +1,5 @@
 # Changelog
 
-## v1.0.6 - 2026-06-01
-
-- Restored the stable v1.0.5 launch, quit, and refresh behavior.
-- Fixed Codex quota selection so each account uses the newer local CodexBar record from snapshots or history before falling back to the DIY last-good cache.
-
 ## v1.0.5 - 2026-05-22
 
 - Changed the local launch command to start the menu bar app as a normal background process instead of a `launchctl submit` job.

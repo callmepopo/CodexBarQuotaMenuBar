@@ -5,7 +5,6 @@ final class DataStore {
     private let encoder = JSONEncoder()
     private let fileManager = FileManager.default
     private let notStartedResetTolerance: TimeInterval = 120
-    private let freshCodexHistoryInterval: TimeInterval = 30 * 60
     private let lastGoodCodexSnapshotCacheVersion = 1
 
     private var homeDirectory: URL {
@@ -110,7 +109,6 @@ final class DataStore {
             let snapshot = lookupKeys.lazy.compactMap { snapshotsByKey[$0] }.first
             let cacheKey = codexSnapshotCacheKey(for: account)
             let cachedSnapshot = snapshotCache.accounts[cacheKey].map { codexSnapshot(from: $0) }
-            let history = loadCodexHistory(for: account, from: historyStore)
             let sourceAuthPath = account.managedHomePath.map {
                 URL(fileURLWithPath: $0).appendingPathComponent("auth.json").path
             }
@@ -120,7 +118,6 @@ final class DataStore {
             let displayEmail = account.email ?? snapshot?.accountEmail ?? authEmail
             let isActive = displayEmail?.lowercased() == activeEmail
 
-            var selected: (windows: [QuotaWindow], updatedAt: String?, status: String?, subscription: String?)?
             if let snapshot {
                 let windows = normalizeCodexWindows(
                     [snapshot.primary, snapshot.secondary].compactMap { $0 },
@@ -134,37 +131,18 @@ final class DataStore {
                         cacheDidChange = true
                     }
 
-                    selected = (
+                    return AccountQuota(
+                        id: "codex-\(account.id)",
+                        provider: "Codex",
+                        displayName: Privacy.maskedEmail(displayEmail),
+                        subscription: displaySubscription(snapshot.loginMethod ?? authPlan),
                         windows: windows,
                         updatedAt: snapshot.updatedAt?.value,
                         status: nil,
-                        subscription: displaySubscription(snapshot.loginMethod ?? authPlan)
+                        switchSourceAuthPath: sourceAuthPath,
+                        isActive: isActive
                     )
                 }
-            }
-
-            if let history,
-               selected == nil || isOlderCapturedAt(selected?.updatedAt, than: history.updatedAt) {
-                selected = (
-                    windows: history.windows,
-                    updatedAt: history.updatedAt,
-                    status: codexHistoryStatus(updatedAt: history.updatedAt),
-                    subscription: displaySubscription(authPlan)
-                )
-            }
-
-            if let selected {
-                return AccountQuota(
-                    id: "codex-\(account.id)",
-                    provider: "Codex",
-                    displayName: Privacy.maskedEmail(displayEmail),
-                    subscription: selected.subscription,
-                    windows: selected.windows,
-                    updatedAt: selected.updatedAt,
-                    status: selected.status,
-                    switchSourceAuthPath: sourceAuthPath,
-                    isActive: isActive
-                )
             }
 
             if let cachedSnapshot {
@@ -187,14 +165,15 @@ final class DataStore {
                 }
             }
 
+            let history = loadCodexHistory(for: account, from: historyStore)
             return AccountQuota(
                 id: "codex-\(account.id)",
                 provider: "Codex",
                 displayName: Privacy.maskedEmail(displayEmail),
                 subscription: displaySubscription(authPlan),
-                windows: [],
-                updatedAt: nil,
-                status: "需重新认证",
+                windows: history?.windows ?? [],
+                updatedAt: history?.updatedAt,
+                status: history == nil ? "需重新认证" : "历史数据 / 需重新认证",
                 switchSourceAuthPath: sourceAuthPath,
                 isActive: isActive
             )
@@ -345,17 +324,6 @@ final class DataStore {
         let latestCapture = histories.compactMap { latestHistoryEntry($0.entries)?.capturedAt }
             .max { isOlderCapturedAt($0, than: $1) }
         return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, latestCapture)
-    }
-
-    private func codexHistoryStatus(updatedAt: String?) -> String? {
-        guard
-            let updatedAtDate = quotaDate(from: updatedAt),
-            Date().timeIntervalSince(updatedAtDate) <= freshCodexHistoryInterval
-        else {
-            return "历史数据"
-        }
-
-        return nil
     }
 
     private func loadLastGoodCodexSnapshotCache() -> LastGoodCodexSnapshotCache {
