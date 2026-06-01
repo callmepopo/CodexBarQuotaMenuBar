@@ -26,11 +26,6 @@ final class DataStore {
             .appendingPathComponent("Library/Application Support/CodexBar/codex-account-snapshots.json")
     }
 
-    private var codexHistoryURL: URL {
-        homeDirectory
-            .appendingPathComponent("Library/Application Support/com.steipete.codexbar/history/codex.json")
-    }
-
     private var claudeHistoryURL: URL {
         homeDirectory
             .appendingPathComponent("Library/Application Support/com.steipete.codexbar/history/claude.json")
@@ -79,22 +74,23 @@ final class DataStore {
         }
 
         let snapshotStore = try? decode(CodexSnapshotStore.self, from: codexSnapshotsURL)
-        let historyStore = try? decode(CodexHistoryStore.self, from: codexHistoryURL)
         let activeEmail = codexAuthIdentity(at: activeCodexAuthURL).email?.lowercased()
         var snapshotCache = loadLastGoodCodexSnapshotCache()
         var cacheDidChange = lastGoodCodexSnapshotCacheNeedsRewrite()
         let currentCacheKeys = Set(accountStore.accounts.map { codexSnapshotCacheKey(for: $0) })
-        var snapshotsByKey: [String: CodexSnapshot] = [:]
+        let emailGroupSizes = Dictionary(
+            grouping: accountStore.accounts,
+            by: { normalizedEmail($0.email) ?? "" }
+        ).mapValues(\.count)
+        var recordsByVisibleID: [String: CodexSnapshotRecord] = [:]
 
         for record in snapshotStore?.records ?? [] {
-            guard let snapshot = record.snapshot else {
+            let recordID = record.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !recordID.isEmpty else {
                 continue
             }
 
-            snapshotsByKey[record.id.lowercased()] = snapshot
-            if let email = snapshot.accountEmail?.lowercased(), !email.isEmpty {
-                snapshotsByKey[email] = snapshot
-            }
+            recordsByVisibleID[recordID] = record
         }
 
         snapshotCache.accounts.keys
@@ -105,8 +101,13 @@ final class DataStore {
             }
 
         let accounts = accountStore.accounts.map { account in
-            let lookupKeys = [account.email, account.id].compactMap { $0?.lowercased() }
-            let snapshot = lookupKeys.lazy.compactMap { snapshotsByKey[$0] }.first
+            let visibleAccountID = codexVisibleAccountID(
+                for: account,
+                emailGroupSize: emailGroupSizes[normalizedEmail(account.email) ?? ""] ?? 0
+            )
+            let snapshotRecord = recordsByVisibleID[visibleAccountID]
+            let snapshot = snapshotRecord?.snapshot
+            let recordStatus = codexSnapshotStatus(for: snapshotRecord?.error)
             let cacheKey = codexSnapshotCacheKey(for: account)
             let cachedSnapshot = snapshotCache.accounts[cacheKey].map { codexSnapshot(from: $0) }
             let sourceAuthPath = account.managedHomePath.map {
@@ -138,14 +139,28 @@ final class DataStore {
                         subscription: displaySubscription(snapshot.loginMethod ?? authPlan),
                         windows: windows,
                         updatedAt: snapshot.updatedAt?.value,
-                        status: nil,
+                        status: recordStatus,
                         switchSourceAuthPath: sourceAuthPath,
                         isActive: isActive
                     )
                 }
             }
 
-            if let cachedSnapshot {
+            if let recordStatus {
+                return AccountQuota(
+                    id: "codex-\(account.id)",
+                    provider: "Codex",
+                    displayName: Privacy.maskedEmail(displayEmail),
+                    subscription: displaySubscription(authPlan),
+                    windows: [],
+                    updatedAt: nil,
+                    status: recordStatus,
+                    switchSourceAuthPath: sourceAuthPath,
+                    isActive: isActive
+                )
+            }
+
+            if snapshotRecord == nil, let cachedSnapshot {
                 let windows = normalizeCodexWindows(
                     [cachedSnapshot.primary, cachedSnapshot.secondary].compactMap { $0 },
                     capturedAt: cachedSnapshot.updatedAt?.value
@@ -165,15 +180,14 @@ final class DataStore {
                 }
             }
 
-            let history = loadCodexHistory(for: account, from: historyStore)
             return AccountQuota(
                 id: "codex-\(account.id)",
                 provider: "Codex",
                 displayName: Privacy.maskedEmail(displayEmail),
                 subscription: displaySubscription(authPlan),
-                windows: history?.windows ?? [],
-                updatedAt: history?.updatedAt,
-                status: history == nil ? "需重新认证" : "历史数据 / 需重新认证",
+                windows: [],
+                updatedAt: nil,
+                status: "等待 CodexBar 刷新",
                 switchSourceAuthPath: sourceAuthPath,
                 isActive: isActive
             )
@@ -285,47 +299,6 @@ final class DataStore {
         }
     }
 
-    private func loadCodexHistory(
-        for account: ManagedCodexAccount,
-        from historyStore: CodexHistoryStore?
-    ) -> (windows: [QuotaWindow], updatedAt: String?)? {
-        guard let historyStore else {
-            return nil
-        }
-
-        let keyCandidates = [
-            account.providerAccountID.map { "codex:v1:provider-account:\($0)" },
-            account.email,
-            account.id
-        ].compactMap { $0?.lowercased() }
-
-        guard let histories = keyCandidates.lazy.compactMap({ historyStore.accounts[$0] }).first else {
-            return nil
-        }
-
-        let windows = histories.compactMap { history -> QuotaWindow? in
-            guard let latest = latestHistoryEntry(history.entries) else {
-                return nil
-            }
-
-            let window = QuotaWindow(
-                usedPercent: latest.usedPercent,
-                resetDescription: formatResetDescription(latest.resetsAt),
-                resetsAt: FlexibleString(value: latest.resetsAt),
-                windowMinutes: history.windowMinutes
-            )
-            return normalizeCodexWindow(window, capturedAt: latest.capturedAt)
-        }
-
-        guard !windows.isEmpty else {
-            return nil
-        }
-
-        let latestCapture = histories.compactMap { latestHistoryEntry($0.entries)?.capturedAt }
-            .max { isOlderCapturedAt($0, than: $1) }
-        return (windows.sorted { $0.windowMinutes < $1.windowMinutes }, latestCapture)
-    }
-
     private func loadLastGoodCodexSnapshotCache() -> LastGoodCodexSnapshotCache {
         guard let cache = try? decode(LastGoodCodexSnapshotCache.self, from: lastGoodCodexSnapshotsURL) else {
             return LastGoodCodexSnapshotCache(
@@ -366,12 +339,48 @@ final class DataStore {
     }
 
     private func codexSnapshotCacheKey(for account: ManagedCodexAccount) -> String {
-        if let providerAccountID = account.providerAccountID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !providerAccountID.isEmpty {
-            return "provider-account:\(providerAccountID.lowercased())"
+        return "managed-account:\(account.id.lowercased())"
+    }
+
+    private func codexVisibleAccountID(for account: ManagedCodexAccount, emailGroupSize: Int) -> String {
+        let normalizedAccountEmail = normalizedEmail(account.email)
+        guard emailGroupSize > 1 else {
+            return normalizedAccountEmail ?? "managed:\(account.id.lowercased())"
         }
 
-        return "managed-account:\(account.id.lowercased())"
+        return "managed:\(account.id.lowercased())"
+    }
+
+    private func normalizedEmail(_ value: String?) -> String? {
+        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+
+        return normalized
+    }
+
+    private func codexSnapshotStatus(for error: String?) -> String? {
+        guard let normalized = error?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+
+        if normalized.contains("deactivated") {
+            return "工作区停用"
+        }
+        if normalized.contains("expired")
+            || normalized.contains("revoked")
+            || normalized.contains("unauthorized")
+            || normalized.contains("401")
+            || normalized.contains("token_invalidated")
+        {
+            return "需重新认证"
+        }
+        if normalized.contains("missing"), normalized.contains("auth") {
+            return "授权缺失"
+        }
+        return "暂不可用"
     }
 
     private func cachedCodexSnapshot(from snapshot: CodexSnapshot) -> CachedCodexSnapshot {
@@ -394,10 +403,6 @@ final class DataStore {
     }
 
     private func latestHistoryEntry(_ entries: [ClaudeHistoryEntry]) -> ClaudeHistoryEntry? {
-        entries.max { isOlderCapturedAt($0.capturedAt, than: $1.capturedAt) }
-    }
-
-    private func latestHistoryEntry(_ entries: [CodexHistoryEntry]) -> CodexHistoryEntry? {
         entries.max { isOlderCapturedAt($0.capturedAt, than: $1.capturedAt) }
     }
 

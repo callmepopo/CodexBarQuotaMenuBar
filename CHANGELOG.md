@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Matched Codex account quota rows using CodexBar's visible account id logic instead of the shared provider/workspace key.
+- Stopped using Codex history or provider-key cache data to fill a different Codex login that shares the same workspace quota pool.
+- Show CodexBar snapshot errors such as re-authentication requirements on the affected login account instead of borrowing another account's quota.
+
 ## v1.0.5 - 2026-05-22
 
 - Changed the local launch command to start the menu bar app as a normal background process instead of a `launchctl submit` job.

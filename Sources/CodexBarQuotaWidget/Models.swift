@@ -22,6 +22,7 @@ struct ManagedCodexAccount: Decodable {
     let managedHomePath: String?
     let providerAccountID: String?
     let workspaceLabel: String?
+    let workspaceAccountID: String?
 }
 
 struct CodexSnapshotStore: Decodable {
@@ -32,20 +33,10 @@ struct ClaudeHistoryStore: Decodable {
     let accounts: [String: [ClaudeWindowHistory]]
 }
 
-struct CodexHistoryStore: Decodable {
-    let accounts: [String: [CodexWindowHistory]]
-}
-
 struct ClaudeWindowHistory: Decodable {
     let name: String?
     let windowMinutes: Int
     let entries: [ClaudeHistoryEntry]
-}
-
-struct CodexWindowHistory: Decodable {
-    let name: String?
-    let windowMinutes: Int
-    let entries: [CodexHistoryEntry]
 }
 
 struct ClaudeHistoryEntry: Decodable {
@@ -54,15 +45,10 @@ struct ClaudeHistoryEntry: Decodable {
     let usedPercent: Int
 }
 
-struct CodexHistoryEntry: Decodable {
-    let capturedAt: String?
-    let resetsAt: String?
-    let usedPercent: Int
-}
-
 struct CodexSnapshotRecord: Decodable {
     let id: String
     let snapshot: CodexSnapshot?
+    let error: String?
 }
 
 struct CodexSnapshot: Decodable {
