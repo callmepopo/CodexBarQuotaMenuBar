@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.0.1 - 2026-06-19
+
+- Fixed segmented Codex refresh when CodexBarCLI returns valid quota data for some accounts but exits non-zero because another account needs re-authentication.
+- Keep successful account quota snapshots fresh instead of discarding the whole all-accounts response after a partial CLI failure.
+- Preserve Codex accounts returned by CodexBarCLI even when they are temporarily missing from CodexBar's managed account list.
+- Hide stale cached quota windows for accounts with expired, revoked, unauthorized, or missing auth, and show the affected account status instead.
+- Fall back to the active Codex widget snapshot when CodexBarCLI temporarily omits the active account.
+- Improved email extraction from CodexBarCLI account labels that include workspace names.
+- Keep CLI-only cache identifiers masked so the DIY cache does not store full email addresses.
+
 ## v2.0.0 - 2026-06-01
 
 - Added adaptive Codex quota loading for CodexBar's segmented and stacked multi-account layouts.
